@@ -1,5 +1,5 @@
 #[derive(Copy, Drop, Serde, PartialEq, starknet::Store)]
-pub enum State {
+pub enum PeriodState {
     #[default]
     Setup,
     Claim,

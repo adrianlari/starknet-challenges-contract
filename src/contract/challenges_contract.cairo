@@ -15,7 +15,7 @@ pub mod ChallengesContract {
     use starknet::get_block_timestamp;
     use starknet::contract_address::{ContractAddress, contract_address_const};
     use challenges_contract::contract::IChallengesContract;
-    use challenges_contract::contract::types::State;
+    use challenges_contract::contract::types::PeriodState;
     use challenges_contract::contract::types::UserClaim;
     use starknet::storage::Map;
     use challenges_contract::contract::errors::Errors;
@@ -52,11 +52,13 @@ pub mod ChallengesContract {
         upgradeable: UpgradeableComponent::Storage,
         #[substorage(v0)]
         reentrancy_guard: ReentrancyGuardComponent::Storage,
-        period_state: State,
+        period_state: PeriodState,
         challenge_token: ContractAddress,
         total_tokens: u256,
         claims: Map<ContractAddress, UserClaim>,
         contract_address: ContractAddress,
+        end_timestamp: u64,
+        remainings_recipient: ContractAddress,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -76,11 +78,12 @@ pub mod ChallengesContract {
     pub struct EndedEvent {
         pub challenge_token: ContractAddress,
         pub total_tokens: u256,
+        pub end_timestamp: u64,
     }
 
     #[derive(Drop, starknet::Event)]
     pub struct StateChangedEvent {
-        pub new_state: State,
+        pub new_state: PeriodState,
     }
 
     #[event]
@@ -101,18 +104,33 @@ pub mod ChallengesContract {
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState, owner: ContractAddress) {
+    fn constructor(
+        ref self: ContractState,
+        owner: ContractAddress,
+        challenge_token: ContractAddress,
+        end_timestamp: u64,
+        remainings_recipient: ContractAddress,
+    ) {
         self.ownable.initializer(owner);
+        self.challenge_token.write(challenge_token);
+        self.end_timestamp.write(end_timestamp);
+        self.remainings_recipient.write(remainings_recipient);
     }
 
     #[abi(embed_v0)]
     impl ChallengesContractImpl of IChallengesContract<ContractState> {
+        fn set_address_of_contract(ref self: ContractState, address: ContractAddress) {
+            self.require_only_owner();
+
+            self.contract_address.write(address);
+        }
+
         fn start(ref self: ContractState) {
             self.require_only_owner();
 
             self.reentrancy_guard.start();
 
-            assert(self.period_state.read() == State::Setup, Errors::INVALID_STATE);
+            assert(self.period_state.read() == PeriodState::Setup, Errors::INVALID_STATE);
 
             self
                 .require_enough_token_balance(
@@ -121,7 +139,7 @@ pub mod ChallengesContract {
                     self.total_tokens.read(),
                 );
 
-            self.period_state.write(State::Claim);
+            self.period_state.write(PeriodState::Claim);
             self
                 .emit(
                     Event::StartedEvent(
@@ -135,28 +153,65 @@ pub mod ChallengesContract {
             self.reentrancy_guard.end();
         }
 
-        fn end(ref self: ContractState) {
+        fn set_end_timestamp(ref self: ContractState, end_timestamp: u64) {
             self.require_only_owner();
+
+            self.end_timestamp.write(end_timestamp);
+        }
+
+        fn get_end_timestamp(self: @ContractState) -> u64 {
+            return self.end_timestamp.read();
+        }
+
+        fn get_remainings_recipient(self: @ContractState) -> ContractAddress {
+            return self.remainings_recipient.read();
+        }
+
+        fn set_remainings_recipient(
+            ref self: ContractState, remainings_recipient: ContractAddress,
+        ) {
+            self.require_only_owner();
+
+            self.remainings_recipient.write(remainings_recipient);
+        }
+
+        fn end(ref self: ContractState) {
+            let caller = get_caller_address();
+            assert(
+                caller == self.remainings_recipient.read() || caller == self.get_owner(),
+                Errors::UNAUTHORIZED,
+            );
 
             self.reentrancy_guard.start();
 
-            assert(self.period_state.read() == State::Claim, Errors::INVALID_STATE);
+            assert(self.period_state.read() == PeriodState::Claim, Errors::INVALID_STATE);
+            assert(get_block_timestamp() >= self.end_timestamp.read(), Errors::CANNOT_END);
 
-            self.period_state.write(State::Ended);
+            self.period_state.write(PeriodState::Ended);
             self
                 .emit(
                     Event::EndedEvent(
                         EndedEvent {
                             challenge_token: self.challenge_token.read(),
                             total_tokens: self.total_tokens.read(),
+                            end_timestamp: self.end_timestamp.read(),
                         },
                     ),
                 );
 
+            if self.total_tokens.read() > 0 {
+                self
+                    .transfer_tokens(
+                        self.challenge_token.read(),
+                        self.remainings_recipient.read(),
+                        self.total_tokens.read(),
+                    );
+            }
+
             self.reentrancy_guard.end();
         }
 
-        fn set_state(ref self: ContractState, new_state: State) {
+        fn set_state(ref self: ContractState, new_state: PeriodState) {
             self.require_only_owner();
 
             self.reentrancy_guard.start();
@@ -179,7 +234,7 @@ pub mod ChallengesContract {
 
         fn set_claim_amounts(
             ref self: ContractState, users: Array<ContractAddress>, amounts: Array<u256>,
-        ) { 
+        ) {
             self.require_only_owner();
 
             self.reentrancy_guard.start();
@@ -194,7 +249,7 @@ pub mod ChallengesContract {
         }
 
         fn can_claim(self: @ContractState, user: ContractAddress) -> bool {
-            if self.period_state.read() != State::Claim {
+            if self.period_state.read() != PeriodState::Claim {
                 return false;
             }
 
@@ -211,46 +266,82 @@ pub mod ChallengesContract {
                 return false;
             }
 
+            if get_block_timestamp() >= self.end_timestamp.read() {
+                return false;
+            }
+
             return true;
         }
 
-        fn claim(ref self: ContractState) { 
-            let user = get_caller_address();
-            assert(self.can_claim(user), Errors::CANNOT_CLAIM);
-
+        fn claim(ref self: ContractState) {
             self.reentrancy_guard.start();
+
+            let user = get_caller_address();
+
+            if get_block_timestamp() >= self.end_timestamp.read() {
+                if self.period_state.read() == PeriodState::Claim {
+                    self.set_state(PeriodState::Ended);
+                }
+            }
+
+            assert(self.period_state.read() != PeriodState::Ended, Errors::CLAIM_ENDED);
+
+            assert(self.can_claim(user), Errors::CANNOT_CLAIM);
 
             let mut user_claim = self.claims.read(user);
             user_claim.has_claimed = true;
             user_claim.timestamp = get_block_timestamp();
 
             self.total_tokens.write(self.total_tokens.read() - user_claim.amount);
+            self.claims.write(user, user_claim);
 
             self.transfer_tokens(self.challenge_token.read(), user, user_claim.amount);
 
-            self.emit(Event::ClaimEvent(ClaimEvent { user: user, amount: user_claim.amount, timestamp: user_claim.timestamp }));
+            self
+                .emit(
+                    Event::ClaimEvent(
+                        ClaimEvent {
+                            user: user, amount: user_claim.amount, timestamp: user_claim.timestamp,
+                        },
+                    ),
+                );
 
             self.reentrancy_guard.end();
         }
 
-        fn has_claimed(
-            self: @ContractState, user: ContractAddress,
-        ) -> bool { 
+        fn has_claimed(self: @ContractState, user: ContractAddress) -> bool {
             let user_claim = self.claims.read(user);
             return user_claim.has_claimed;
         }
 
-        fn get_claim_amount(
-            self: @ContractState, user: ContractAddress,
-        ) -> u256 { 
+        fn get_claim_info(self: @ContractState, user: ContractAddress) -> UserClaim {
+            return self.claims.read(user);
+        }
+
+        fn get_claim_amount(self: @ContractState, user: ContractAddress) -> u256 {
             let user_claim = self.claims.read(user);
             return user_claim.amount;
         }
 
-        fn get_total_tokens(self: @ContractState) -> u256 { 
+        fn get_total_tokens(self: @ContractState) -> u256 {
             return self.total_tokens.read();
         }
 
+        fn get_owner(self: @ContractState) -> ContractAddress {
+            return self.ownable.owner();
+        }
+
+        fn get_challenge_token(self: @ContractState) -> ContractAddress {
+            return self.challenge_token.read();
+        }
+
+        fn get_contract_name(self: @ContractState) -> felt252 {
+            'PulsarMoney Challenges v1.0.0'
+        }
+
+        fn get_period_state(self: @ContractState) -> PeriodState {
+            return self.period_state.read();
+        }
     }
 
     #[abi(embed_v0)]
@@ -265,13 +356,13 @@ pub mod ChallengesContract {
     #[abi(per_item)]
     impl ExternalImpl of ExternalTrait {
         #[external(v0)]
-        fn pause(ref self: ContractState) { 
+        fn pause(ref self: ContractState) {
             self.ownable.assert_only_owner();
             self.pausable.pause();
         }
 
         #[external(v0)]
-        fn unpause(ref self: ContractState) { 
+        fn unpause(ref self: ContractState) {
             self.ownable.assert_only_owner();
             self.pausable.unpause();
         }
@@ -285,7 +376,7 @@ pub mod ChallengesContract {
 
         fn transfer_tokens(
             ref self: ContractState, token: ContractAddress, to: ContractAddress, amount: u256,
-        ) { 
+        ) {
             let token_dispatcher = IERC20Dispatcher { contract_address: token };
             let result = token_dispatcher.transfer(to, amount);
             assert(result, Errors::TRANSFER_FAILED);
@@ -319,10 +410,10 @@ pub mod ChallengesContract {
 
         fn set_claim_amount_internal(ref self: ContractState, user: ContractAddress, amount: u256) {
             assert(amount > 0, Errors::AMOUNT_NOT_ENOUGH);
-            assert(self.period_state.read() == State::Setup, Errors::INVALID_STATE);
+            assert(self.period_state.read() == PeriodState::Setup, Errors::INVALID_STATE);
 
             let mut user_claim = self.claims.read(user);
-         
+
             if user_claim.amount > 0 {
                 let tokens = self.total_tokens.read() - user_claim.amount;
                 self.total_tokens.write(tokens);
