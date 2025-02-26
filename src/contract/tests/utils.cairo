@@ -9,8 +9,7 @@ use challenges_contract::contract::interfaces::IChallengesContractDispatcherTrai
 use snforge_std::{declare, ContractClassTrait};
 
 use snforge_std::{
-    start_cheat_caller_address_global, stop_cheat_caller_address_global, start_cheat_caller_address,
-    stop_cheat_caller_address,
+    start_cheat_caller_address_global, stop_cheat_caller_address_global
 };
 use starknet::{ContractAddress, contract_address_const};
 

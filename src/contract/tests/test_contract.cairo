@@ -1,7 +1,3 @@
-use core::clone::Clone;
-
-use challenges_contract::contract::interfaces::IChallengesContract;
-use challenges_contract::contract::interfaces::IChallengesContractDispatcher;
 use challenges_contract::contract::interfaces::IChallengesContractDispatcherTrait;
 use challenges_contract::contract::types::PeriodState;
 use snforge_std::{
@@ -12,8 +8,7 @@ use snforge_std::{
 use starknet::{contract_address_const};
 
 use challenges_contract::contract::tests::utils::{
-    get_state, get_owner, get_token_name_1, get_token_symbol_1, deploy_erc20_contract,
-    transfer_token, assert_balance_of_token, deploy_contract, get_balance_of_token,
+    get_owner, transfer_token, deploy_contract, get_balance_of_token,
     get_end_timestamp, get_remainings_recipient,
 };
 
@@ -37,7 +32,7 @@ fn test_deploy_successful() {
 
 #[test]
 fn test_setup_1() {
-    let (contract_dispatcher, erc20_dispatcher) = deploy_contract();
+    let (contract_dispatcher, _) = deploy_contract();
 
     let address1 = contract_address_const::<'address1'>();
     let address2 = contract_address_const::<'address2'>();
@@ -65,7 +60,7 @@ fn test_setup_1() {
 
 #[test]
 fn test_setup_2() {
-    let (contract_dispatcher, erc20_dispatcher) = deploy_contract();
+    let (contract_dispatcher, _) = deploy_contract();
 
     let address1 = contract_address_const::<'address1'>();
     let address2 = contract_address_const::<'address2'>();
@@ -104,7 +99,7 @@ fn test_setup_2() {
 #[test]
 #[should_panic(expected: 'Insufficient token balance')]
 fn test_setup_and_start_fail() {
-    let (contract_dispatcher, erc20_dispatcher) = deploy_contract();
+    let (contract_dispatcher, _) = deploy_contract();
 
     let address1 = contract_address_const::<'address1'>();
     let address2 = contract_address_const::<'address2'>();
@@ -174,7 +169,7 @@ fn test_setup_and_start() {
 #[test]
 #[should_panic(expected: 'Caller is not the owner')]
 fn test_setup_only_owner() {
-    let (contract_dispatcher, erc20_dispatcher) = deploy_contract();
+    let (contract_dispatcher, _) = deploy_contract();
 
     let address1 = contract_address_const::<'address1'>();
     let address2 = contract_address_const::<'address2'>();
@@ -421,7 +416,6 @@ fn test_setup_cant_claim_not_started() {
 
     let address1 = contract_address_const::<'address1'>();
     let address2 = contract_address_const::<'address2'>();
-    let address3 = contract_address_const::<'address3'>();
 
     let state = contract_dispatcher.get_period_state();
     assert(state == PeriodState::Setup, 'Period state mismatch');
